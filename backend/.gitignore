@@ -1,0 +1,81 @@
+# ==========================
+# Secrets & Environment Files
+# ==========================
+.env
+.env.*
+!.env.example
+
+# ==========================
+# Python
+# ==========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+.eggs/
+*.egg-info/
+*.egg
+MANIFEST
+
+# ==========================
+# Virtual Environments
+# ==========================
+.venv/
+venv/
+ENV/
+env/
+env.bak/
+venv.bak/
+
+# ==========================
+# Type Checking & Linting
+# ==========================
+.mypy_cache/
+.ruff_cache/
+.dmypy.json
+dmypy.json
+
+# ==========================
+# Testing
+# ==========================
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# ==========================
+# Distribution / Packaging
+# ==========================
+*.manifest
+*.spec
+pip-log.txt
+pip-delete-this-directory.txt
+
+# ==========================
+# Playwright
+# ==========================
+/playwright-report/
+/test-results/
+/playwright/.cache/
+
+# ==========================
+# Alembic (keep versions tracked)
+# ==========================
+# alembic/versions/ is intentionally tracked
+
+# ==========================
+# Celery
+# ==========================
+celerybeat-schedule
+celerybeat.pid
+
+# ==========================
+# Logs
+# ==========================
+*.log
+logs/

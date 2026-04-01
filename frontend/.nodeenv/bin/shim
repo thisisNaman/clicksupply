@@ -1,0 +1,5 @@
+#!/usr/bin/env sh
+export NODE_PATH='/Users/aggarwaln/naman-personal/clicksupply/frontend/.nodeenv/lib/node_modules'
+export NPM_CONFIG_PREFIX='/Users/aggarwaln/naman-personal/clicksupply/frontend/.nodeenv'
+export npm_config_prefix='/Users/aggarwaln/naman-personal/clicksupply/frontend/.nodeenv'
+exec '/Users/aggarwaln/naman-personal/clicksupply/frontend/.nodeenv/bin/node' "$@"
