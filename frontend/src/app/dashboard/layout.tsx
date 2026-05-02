@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 import Link from "next/link";
 import { getToken, getMe, logout, autoLogin, type UserInfo } from "@/lib/api";
 import { CaptureProvider, useCapture } from "@/lib/capture-context";
+import { ActionProvider } from "@/lib/action-context";
 
 export default function DashboardLayout({
     children,
@@ -32,84 +33,92 @@ export default function DashboardLayout({
 
     return (
         <CaptureProvider>
-            <div style={{ display: "flex", minHeight: "100vh" }}>
-                {/* Sidebar */}
-                <nav
-                    style={{
-                        width: "250px",
-                        background: "var(--card)",
-                        borderRight: "1px solid var(--border)",
-                        padding: "1.5rem 1rem",
-                        display: "flex",
-                        flexDirection: "column",
-                        gap: "0.25rem",
-                    }}
-                >
-                    <div
+            <ActionProvider>
+                <div style={{ display: "flex", minHeight: "100vh" }}>
+                    {/* Sidebar */}
+                    <nav
                         style={{
-                            fontSize: "1.25rem",
-                            fontWeight: 700,
-                            color: "var(--primary)",
-                            marginBottom: "1.5rem",
-                            paddingLeft: "0.75rem",
-                        }}
-                    >
-                        ClickSupply
-                    </div>
-
-                    <NavItem href="/dashboard" label="Overview" />
-                    <NavItem href="/dashboard/visibility" label="Visibility Scores" />
-                    <NavItem href="/dashboard/som" label="Share of Model" />
-                    <NavItem href="/dashboard/crawlers" label="Agent Analytics" />
-                    <NavItem href="/dashboard/audit" label="AEO Audit" />
-                    <NavItem href="/dashboard/prompts" label="Prompt Volumes" />
-                    <NavItem href="/dashboard/competitors" label="Competitors" />
-
-                    <div style={{ height: 1, background: "var(--border)", margin: "0.75rem 0" }} />
-
-                    <NavItem href="/dashboard/setup" label="Brand Setup" />
-                    <NavItem href="/dashboard/settings" label="Settings" />
-
-                    <div
-                        style={{
-                            marginTop: "auto",
-                            padding: "0.75rem",
-                            fontSize: "0.8rem",
-                            color: "var(--muted-foreground)",
+                            width: "260px",
+                            background: "var(--card)",
+                            borderRight: "1px solid var(--border)",
+                            padding: "1.5rem 0.75rem",
                             display: "flex",
                             flexDirection: "column",
-                            gap: "0.5rem",
+                            gap: "2px",
+                            boxShadow: "4px 0 24px rgba(0,0,0,0.15)",
                         }}
                     >
-                        {user && (
-                            <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                {user.full_name}
-                            </div>
-                        )}
-                        <button
-                            onClick={() => logout()}
+                        <div
                             style={{
-                                background: "none",
-                                border: "1px solid var(--border)",
-                                borderRadius: 6,
-                                padding: "0.4rem 0.75rem",
-                                fontSize: "0.8rem",
-                                cursor: "pointer",
-                                color: "var(--foreground)",
+                                fontSize: "1.3rem",
+                                fontWeight: 800,
+                                background: "var(--gradient-primary)",
+                                WebkitBackgroundClip: "text",
+                                WebkitTextFillColor: "transparent",
+                                marginBottom: "2rem",
+                                paddingLeft: "0.75rem",
+                                letterSpacing: "-0.02em",
                             }}
                         >
-                            Log out
-                        </button>
-                        <div>v0.1.0 — Phase 1</div>
-                    </div>
-                </nav>
+                            ClickSupply
+                        </div>
 
-                {/* Main content */}
-                <main style={{ flex: 1, padding: "2rem", overflowY: "auto" }}>
-                    <GlobalCaptureBar />
-                    {children}
-                </main>
-            </div>
+                        <NavItem href="/dashboard" label="Overview" />
+                        <NavItem href="/dashboard/visibility" label="Visibility Scores" />
+                        <NavItem href="/dashboard/som" label="Share of Model" />
+                        <NavItem href="/dashboard/actions" label="Action Center" />
+                        <NavItem href="/dashboard/crawlers" label="Agent Analytics" />
+                        <NavItem href="/dashboard/audit" label="AEO Audit" />
+                        <NavItem href="/dashboard/prompts" label="Prompt Volumes" />
+                        <NavItem href="/dashboard/competitors" label="Competitors" />
+                        <NavItem href="/dashboard/responses" label="Responses" />
+
+                        <div style={{ height: 1, background: "var(--border)", margin: "0.75rem 0.5rem" }} />
+
+                        <NavItem href="/dashboard/setup" label="Brand Setup" />
+                        <NavItem href="/dashboard/settings" label="Settings" />
+
+                        <div
+                            style={{
+                                marginTop: "auto",
+                                padding: "0.75rem",
+                                fontSize: "0.8rem",
+                                color: "var(--muted-foreground)",
+                                display: "flex",
+                                flexDirection: "column",
+                                gap: "0.5rem",
+                            }}
+                        >
+                            {user && (
+                                <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                    {user.full_name}
+                                </div>
+                            )}
+                            <button
+                                onClick={() => logout()}
+                                style={{
+                                    background: "none",
+                                    border: "1px solid var(--border)",
+                                    borderRadius: 6,
+                                    padding: "0.4rem 0.75rem",
+                                    fontSize: "0.8rem",
+                                    cursor: "pointer",
+                                    color: "var(--foreground)",
+                                }}
+                            >
+                                Log out
+                            </button>
+                            <div style={{ fontSize: "0.7rem", color: "var(--muted-foreground)", opacity: 0.5 }}>v0.2.0 — Phase 2</div>
+                        </div>
+                    </nav>
+
+                    {/* Main content */}
+                    <main style={{ flex: 1, padding: "2rem 2.5rem", overflowY: "auto", background: "var(--background)" }}>
+                        <GlobalCaptureBar />
+                        {children}
+                    </main>
+                </div>
+            </ActionProvider>
         </CaptureProvider>
     );
 }
@@ -172,15 +181,19 @@ function NavItem({ href, label }: { href: string; label: string }) {
     return (
         <Link
             href={href}
+            className={isActive ? "" : "card-hover"}
             style={{
-                padding: "0.6rem 0.75rem",
-                borderRadius: "6px",
-                color: isActive ? "var(--primary)" : "var(--foreground)",
-                background: isActive ? "var(--background)" : "transparent",
+                padding: "0.55rem 0.75rem",
+                borderRadius: "8px",
+                color: isActive ? "var(--primary)" : "var(--muted-foreground)",
+                background: isActive ? "var(--primary-muted)" : "transparent",
                 textDecoration: "none",
-                fontSize: "0.9rem",
-                fontWeight: isActive ? 600 : 400,
-                transition: "background 0.15s, color 0.15s",
+                fontSize: "0.85rem",
+                fontWeight: isActive ? 600 : 500,
+                transition: "background 0.2s, color 0.2s, transform 0.2s",
+                letterSpacing: "-0.01em",
+                display: "block",
+                border: "1px solid transparent",
             }}
         >
             {label}

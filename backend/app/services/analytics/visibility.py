@@ -538,5 +538,543 @@ class AnalyticsService:
             "rankings": {"som_rank": som_rank, "total_entities": len(all_entities)},
         }
 
+    # ──────────────── Intent Distribution ────────────────
+
+    async def get_intent_distribution(
+        self, brand_id, days: int, db: AsyncSession, engine_filter: str | None = None
+    ) -> dict:
+        """Aggregate intent classification across prompts and their responses."""
+        since = datetime.now(timezone.utc) - timedelta(days=days)
+
+        query = (
+            select(AIResponse, TrackedPrompt)
+            .join(TrackedPrompt)
+            .where(
+                TrackedPrompt.brand_id == brand_id,
+                AIResponse.captured_at >= since,
+            )
+        )
+        if engine_filter:
+            query = query.where(AIResponse.engine == engine_filter)
+
+        result = await db.execute(query)
+        rows = result.all()
+
+        # Count intents from extra_metadata (per response)
+        intent_counter: Counter = Counter()
+        intent_prompts: dict[str, dict[str, dict]] = defaultdict(dict)  # intent -> prompt_id -> {text, mentions, total}
+
+        for resp, prompt in rows:
+            intent = "informational"
+            if resp.extra_metadata and resp.extra_metadata.get("intent"):
+                intent = resp.extra_metadata["intent"]
+            elif prompt.intent:
+                intent = prompt.intent
+            intent_counter[intent] += 1
+
+            pid = str(prompt.id)
+            if pid not in intent_prompts[intent]:
+                intent_prompts[intent][pid] = {"text": prompt.text, "mentions": 0, "total": 0}
+            intent_prompts[intent][pid]["total"] += 1
+            if resp.brand_mentioned:
+                intent_prompts[intent][pid]["mentions"] += 1
+
+        total = sum(intent_counter.values()) or 1
+        distribution = [
+            {"intent": intent, "count": count, "pct": round(count / total * 100, 1)}
+            for intent, count in intent_counter.most_common()
+        ]
+
+        # Top prompts per intent (by visibility %)
+        top_prompts_by_intent = {}
+        for intent, prompts_map in intent_prompts.items():
+            sorted_prompts = sorted(
+                prompts_map.values(),
+                key=lambda p: (p["mentions"] / p["total"] * 100) if p["total"] else 0,
+                reverse=True,
+            )[:5]
+            top_prompts_by_intent[intent] = [
+                {
+                    "text": p["text"],
+                    "visibility_pct": round(p["mentions"] / p["total"] * 100, 1) if p["total"] else 0,
+                }
+                for p in sorted_prompts
+            ]
+
+        return {"distribution": distribution, "top_prompts_by_intent": top_prompts_by_intent}
+
+    # ──────────────── Co-Citation Mapping ────────────────
+
+    async def get_co_citation_map(
+        self, brand_id, days: int, db: AsyncSession, engine_filter: str | None = None
+    ) -> dict:
+        """Find brands that appear alongside the target brand in AI responses."""
+        since = datetime.now(timezone.utc) - timedelta(days=days)
+
+        brand_result = await db.execute(select(Brand).where(Brand.id == brand_id))
+        brand = brand_result.scalar_one_or_none()
+        if not brand:
+            return {"co_cited_brands": [], "total_responses_with_brand": 0}
+
+        query = (
+            select(AIResponse)
+            .join(TrackedPrompt)
+            .where(
+                TrackedPrompt.brand_id == brand_id,
+                AIResponse.captured_at >= since,
+                AIResponse.brand_mentioned.is_(True),
+            )
+        )
+        if engine_filter:
+            query = query.where(AIResponse.engine == engine_filter)
+
+        result = await db.execute(query)
+        responses = result.scalars().all()
+
+        brand_lower = brand.name.lower()
+        alias_lowers = set()
+        if brand.aliases:
+            alias_lowers = {v.lower() for v in brand.aliases.values()}
+
+        co_brand_data: dict[str, dict] = {}  # name -> {count, platforms, sentiments}
+
+        for r in responses:
+            if not r.extra_metadata:
+                continue
+            brands_in_response = r.extra_metadata.get("brands_mentioned", [])
+            eng = r.engine.value if hasattr(r.engine, "value") else str(r.engine)
+
+            for b in brands_in_response:
+                name = b.get("name", "")
+                name_lower = name.lower()
+                # Skip the target brand itself
+                if name_lower == brand_lower or name_lower in alias_lowers:
+                    continue
+                if name_lower not in co_brand_data:
+                    co_brand_data[name_lower] = {
+                        "name": name,
+                        "count": 0,
+                        "platforms": set(),
+                        "sentiments": Counter(),
+                    }
+                co_brand_data[name_lower]["count"] += 1
+                co_brand_data[name_lower]["platforms"].add(eng)
+                co_brand_data[name_lower]["sentiments"][b.get("sentiment", "neutral")] += 1
+
+        co_cited_brands = sorted(
+            [
+                {
+                    "name": d["name"],
+                    "co_occurrence_count": d["count"],
+                    "platforms": sorted(d["platforms"]),
+                    "avg_sentiment": d["sentiments"].most_common(1)[0][0] if d["sentiments"] else "neutral",
+                }
+                for d in co_brand_data.values()
+            ],
+            key=lambda x: x["co_occurrence_count"],
+            reverse=True,
+        )[:25]
+
+        return {
+            "co_cited_brands": co_cited_brands,
+            "total_responses_with_brand": len(responses),
+        }
+
+    # ──────────────── Prompt-wise Brand Distribution ────────────────
+
+    async def get_prompt_brand_matrix(
+        self, brand_id, days: int, db: AsyncSession, engine_filter: str | None = None
+    ) -> dict:
+        """For each tracked prompt, show which brands were mentioned across which engines."""
+        since = datetime.now(timezone.utc) - timedelta(days=days)
+
+        brand_result = await db.execute(select(Brand).where(Brand.id == brand_id))
+        brand = brand_result.scalar_one_or_none()
+        if not brand:
+            return {"prompts": [], "total_prompts": 0, "brands_found": []}
+
+        brand_lower = brand.name.lower()
+
+        query = (
+            select(AIResponse, TrackedPrompt)
+            .join(TrackedPrompt)
+            .where(
+                TrackedPrompt.brand_id == brand_id,
+                AIResponse.captured_at >= since,
+            )
+        )
+        if engine_filter:
+            query = query.where(AIResponse.engine == engine_filter)
+
+        result = await db.execute(query)
+        rows = result.all()
+
+        # prompt_id -> { text, intent, brands -> { name -> { engines, positions, sentiments } } }
+        prompt_data: dict[str, dict] = {}
+        all_brand_names: set[str] = set()
+
+        for resp, prompt in rows:
+            pid = str(prompt.id)
+            if pid not in prompt_data:
+                prompt_data[pid] = {
+                    "prompt_text": prompt.text,
+                    "prompt_id": pid,
+                    "intent": prompt.intent,
+                    "brands": {},
+                }
+
+            eng = resp.engine.value if hasattr(resp.engine, "value") else str(resp.engine)
+
+            # Track target brand from brand_mentioned flag
+            target_key = brand.name
+            if target_key not in prompt_data[pid]["brands"]:
+                prompt_data[pid]["brands"][target_key] = {
+                    "engines": set(),
+                    "positions": [],
+                    "sentiments": Counter(),
+                    "is_target": True,
+                }
+            if resp.brand_mentioned:
+                prompt_data[pid]["brands"][target_key]["engines"].add(eng)
+                if resp.generative_position:
+                    prompt_data[pid]["brands"][target_key]["positions"].append(resp.generative_position)
+                if resp.sentiment:
+                    s = resp.sentiment.value if hasattr(resp.sentiment, "value") else str(resp.sentiment)
+                    prompt_data[pid]["brands"][target_key]["sentiments"][s] += 1
+                all_brand_names.add(target_key)
+
+            # Track all other brands from extra_metadata
+            if not resp.extra_metadata:
+                continue
+            for b in resp.extra_metadata.get("brands_mentioned", []):
+                name = b.get("name", "")
+                if not name or name.lower() == brand_lower:
+                    continue
+                if name not in prompt_data[pid]["brands"]:
+                    prompt_data[pid]["brands"][name] = {
+                        "engines": set(),
+                        "positions": [],
+                        "sentiments": Counter(),
+                        "is_target": False,
+                    }
+                prompt_data[pid]["brands"][name]["engines"].add(eng)
+                pos = b.get("position")
+                if pos is not None:
+                    prompt_data[pid]["brands"][name]["positions"].append(pos)
+                prompt_data[pid]["brands"][name]["sentiments"][b.get("sentiment", "neutral")] += 1
+                all_brand_names.add(name)
+
+        # Build response
+        prompts_out = []
+        for pd in prompt_data.values():
+            brand_mentions = []
+            for bname, binfo in pd["brands"].items():
+                if not binfo["engines"]:
+                    continue
+                avg_pos = round(sum(binfo["positions"]) / len(binfo["positions"]), 1) if binfo["positions"] else None
+                dom_sent = binfo["sentiments"].most_common(1)[0][0] if binfo["sentiments"] else "neutral"
+                brand_mentions.append({
+                    "name": bname,
+                    "engines": sorted(binfo["engines"]),
+                    "mention_count": len(binfo["engines"]),
+                    "avg_position": avg_pos,
+                    "dominant_sentiment": dom_sent,
+                    "is_target": binfo["is_target"],
+                })
+            brand_mentions.sort(key=lambda x: (-int(x["is_target"]), -x["mention_count"]))
+            prompts_out.append({
+                "prompt_text": pd["prompt_text"],
+                "prompt_id": pd["prompt_id"],
+                "intent": pd["intent"],
+                "brand_mentions": brand_mentions,
+            })
+
+        # Sort: prompts with most non-target brands + missing target first
+        def sort_key(p):
+            has_target = any(b["is_target"] for b in p["brand_mentions"])
+            competitor_count = sum(1 for b in p["brand_mentions"] if not b["is_target"])
+            return (has_target, -competitor_count)
+
+        prompts_out.sort(key=sort_key)
+
+        return {
+            "prompts": prompts_out,
+            "total_prompts": len(prompts_out),
+            "brands_found": sorted(all_brand_names),
+        }
+
+    # ──────────────── Uncited Prompt Detection ────────────────
+
+    async def get_uncited_prompts(
+        self, brand_id, days: int, db: AsyncSession, engine_filter: str | None = None
+    ) -> dict:
+        """Find prompts where competitors are mentioned but the target brand is NOT."""
+        since = datetime.now(timezone.utc) - timedelta(days=days)
+
+        # Load competitors
+        comp_result = await db.execute(
+            select(Competitor).where(Competitor.brand_id == brand_id)
+        )
+        competitors = comp_result.scalars().all()
+        if not competitors:
+            return {"gaps": [], "total_prompts_analyzed": 0}
+
+        comp_names = {c.name.lower(): c.name for c in competitors}
+
+        query = (
+            select(AIResponse, TrackedPrompt)
+            .join(TrackedPrompt)
+            .where(
+                TrackedPrompt.brand_id == brand_id,
+                AIResponse.captured_at >= since,
+                AIResponse.brand_mentioned.is_(False),
+            )
+        )
+        if engine_filter:
+            query = query.where(AIResponse.engine == engine_filter)
+
+        result = await db.execute(query)
+        rows = result.all()
+
+        # Group by prompt
+        prompt_gaps: dict[str, dict] = {}  # prompt_id -> {text, competitors: {name: {engines, sentiment}}}
+
+        for resp, prompt in rows:
+            if not resp.extra_metadata:
+                continue
+            brands_in_response = resp.extra_metadata.get("brands_mentioned", [])
+            eng = resp.engine.value if hasattr(resp.engine, "value") else str(resp.engine)
+
+            for b in brands_in_response:
+                b_lower = b.get("name", "").lower()
+                if b_lower in comp_names:
+                    pid = str(prompt.id)
+                    if pid not in prompt_gaps:
+                        prompt_gaps[pid] = {"prompt_text": prompt.text, "prompt_id": pid, "competitors": {}}
+                    comp_display = comp_names[b_lower]
+                    if comp_display not in prompt_gaps[pid]["competitors"]:
+                        prompt_gaps[pid]["competitors"][comp_display] = {
+                            "engines": set(),
+                            "sentiment": b.get("sentiment", "neutral"),
+                        }
+                    prompt_gaps[pid]["competitors"][comp_display]["engines"].add(eng)
+
+        gaps = []
+        for gap_data in prompt_gaps.values():
+            for comp_name, comp_info in gap_data["competitors"].items():
+                gaps.append({
+                    "prompt_text": gap_data["prompt_text"],
+                    "prompt_id": gap_data["prompt_id"],
+                    "competitor_name": comp_name,
+                    "competitor_sentiment": comp_info["sentiment"],
+                    "engines": sorted(comp_info["engines"]),
+                })
+
+        # Sort by number of engines (more engines = bigger gap)
+        gaps.sort(key=lambda g: len(g["engines"]), reverse=True)
+
+        # Count total unique prompts analyzed
+        total_prompts = len({str(prompt.id) for _, prompt in rows})
+
+        return {"gaps": gaps[:50], "total_prompts_analyzed": total_prompts}
+
+    # ──────────────── Topic Clustering ────────────────
+
+    async def get_topic_clusters(
+        self, brand_id, days: int, db: AsyncSession, engine_filter: str | None = None,
+        language: str | None = None, region: str | None = None,
+    ) -> dict:
+        """Cluster prompts into topics based on shared keywords and return per-topic analytics."""
+        since = datetime.now(timezone.utc) - timedelta(days=days)
+
+        query = (
+            select(AIResponse, TrackedPrompt)
+            .join(TrackedPrompt)
+            .where(TrackedPrompt.brand_id == brand_id, AIResponse.captured_at >= since)
+        )
+        if engine_filter:
+            query = query.where(AIResponse.engine == engine_filter)
+        if language:
+            query = query.where(TrackedPrompt.language == language)
+        if region:
+            query = query.where(TrackedPrompt.region == region)
+
+        result = await db.execute(query)
+        rows = result.all()
+        if not rows:
+            return {"clusters": [], "total_prompts": 0, "total_topics": 0}
+
+        # Build per-prompt stats
+        prompt_stats: dict[str, dict] = {}
+        for resp, prompt in rows:
+            pid = str(prompt.id)
+            if pid not in prompt_stats:
+                prompt_stats[pid] = {
+                    "text": prompt.text,
+                    "intent": prompt.intent,
+                    "total": 0,
+                    "mentioned": 0,
+                    "positions": [],
+                }
+            prompt_stats[pid]["total"] += 1
+            if resp.brand_mentioned:
+                prompt_stats[pid]["mentioned"] += 1
+            if resp.generative_position:
+                prompt_stats[pid]["positions"].append(resp.generative_position)
+
+        # Extract topic keywords from prompt text (top 2-3 meaningful words)
+        def extract_topic(text: str) -> str:
+            words = re.findall(r"[a-z]+", text.lower())
+            meaningful = [w for w in words if w not in _STOPWORDS and len(w) > 2]
+            return " ".join(meaningful[:3]) if meaningful else "general"
+
+        topic_prompts: dict[str, list] = defaultdict(list)
+        for pid, stats in prompt_stats.items():
+            topic = extract_topic(stats["text"])
+            vis = (stats["mentioned"] / stats["total"] * 100) if stats["total"] else 0
+            avg_pos = (sum(stats["positions"]) / len(stats["positions"])) if stats["positions"] else None
+            topic_prompts[topic].append({
+                "prompt_id": pid,
+                "text": stats["text"],
+                "intent": stats["intent"],
+                "visibility_pct": round(vis, 1),
+                "mention_count": stats["mentioned"],
+                "avg_position": avg_pos,
+            })
+
+        clusters = []
+        for topic, prompts in topic_prompts.items():
+            avg_vis = sum(p["visibility_pct"] for p in prompts) / len(prompts)
+            positions = [p["avg_position"] for p in prompts if p["avg_position"] is not None]
+            avg_pos = round(sum(positions) / len(positions), 1) if positions else None
+            intents = Counter(p["intent"] for p in prompts if p["intent"])
+            dom_intent = intents.most_common(1)[0][0] if intents else None
+            clusters.append({
+                "topic": topic,
+                "prompt_count": len(prompts),
+                "avg_visibility": round(avg_vis, 1),
+                "avg_position": avg_pos,
+                "dominant_intent": dom_intent,
+                "prompts": sorted(prompts, key=lambda p: -p["visibility_pct"]),
+            })
+
+        clusters.sort(key=lambda c: -c["avg_visibility"])
+
+        return {
+            "clusters": clusters,
+            "total_prompts": len(prompt_stats),
+            "total_topics": len(clusters),
+        }
+
+    # ──────────────── Competitive Citations ────────────────
+
+    async def get_competitive_citations(
+        self, brand_id, days: int, db: AsyncSession, engine_filter: str | None = None
+    ) -> dict:
+        """Compare which domains/sources power your brand's citations vs competitors'."""
+        since = datetime.now(timezone.utc) - timedelta(days=days)
+
+        # Your brand's citations
+        your_query = (
+            select(AIResponse)
+            .join(TrackedPrompt)
+            .where(
+                TrackedPrompt.brand_id == brand_id,
+                AIResponse.captured_at >= since,
+                AIResponse.brand_mentioned.is_(True),
+            )
+        )
+        if engine_filter:
+            your_query = your_query.where(AIResponse.engine == engine_filter)
+
+        your_result = await db.execute(your_query)
+        your_responses = your_result.scalars().all()
+
+        def extract_domains(responses):
+            domain_data: dict[str, dict] = {}
+            for r in responses:
+                if not r.citations:
+                    continue
+                eng = r.engine.value if hasattr(r.engine, "value") else str(r.engine)
+                sent = r.sentiment.value if hasattr(r.sentiment, "value") and r.sentiment else "neutral"
+                cites = r.citations if isinstance(r.citations, list) else r.citations.get("urls", [])
+                for c in cites:
+                    domain = c.get("domain", "") if isinstance(c, dict) else ""
+                    if not domain:
+                        continue
+                    if domain not in domain_data:
+                        domain_data[domain] = {"count": 0, "engines": set(), "sentiments": Counter()}
+                    domain_data[domain]["count"] += 1
+                    domain_data[domain]["engines"].add(eng)
+                    domain_data[domain]["sentiments"][sent] += 1
+            return sorted(
+                [
+                    {
+                        "domain": d,
+                        "count": info["count"],
+                        "engines": sorted(info["engines"]),
+                        "avg_sentiment": info["sentiments"].most_common(1)[0][0] if info["sentiments"] else "neutral",
+                    }
+                    for d, info in domain_data.items()
+                ],
+                key=lambda x: -x["count"],
+            )[:20]
+
+        your_top = extract_domains(your_responses)
+        your_domain_set = {d["domain"] for d in your_top}
+
+        # Load competitors
+        comp_result = await db.execute(
+            select(Competitor).where(Competitor.brand_id == brand_id)
+        )
+        competitors = comp_result.scalars().all()
+
+        comp_citations = []
+        all_comp_domains: set[str] = set()
+
+        for comp in competitors:
+            # Find responses where this competitor is mentioned in extra_metadata
+            all_query = (
+                select(AIResponse)
+                .join(TrackedPrompt)
+                .where(
+                    TrackedPrompt.brand_id == brand_id,
+                    AIResponse.captured_at >= since,
+                )
+            )
+            if engine_filter:
+                all_query = all_query.where(AIResponse.engine == engine_filter)
+
+            all_result = await db.execute(all_query)
+            all_responses = all_result.scalars().all()
+
+            # Filter to responses that mention this competitor
+            comp_lower = comp.name.lower()
+            comp_responses = []
+            for r in all_responses:
+                if not r.extra_metadata:
+                    continue
+                brands = r.extra_metadata.get("brands_mentioned", [])
+                if any(b.get("name", "").lower() == comp_lower for b in brands):
+                    comp_responses.append(r)
+
+            top_domains = extract_domains(comp_responses)
+            for d in top_domains:
+                all_comp_domains.add(d["domain"])
+
+            comp_citations.append({
+                "competitor_name": comp.name,
+                "total_citations": sum(d["count"] for d in top_domains),
+                "top_domains": top_domains,
+            })
+
+        overlap = sorted(your_domain_set & all_comp_domains)
+
+        return {
+            "competitors": comp_citations,
+            "your_top_domains": your_top,
+            "overlap_domains": overlap,
+        }
+
 
 analytics_service = AnalyticsService()

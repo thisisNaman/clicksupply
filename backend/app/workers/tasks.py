@@ -90,6 +90,11 @@ async def run_capture_for_brand(
         prompt_data = [(p.id, p.text) for p in prompts]
 
     # Phase 2: Run capture loop with Copilot SDK (no open DB session)
+    _MAX_STEPS = 20
+    if len(prompt_data) * len(target_engines) > _MAX_STEPS:
+        max_prompts = max(1, _MAX_STEPS // len(target_engines))
+        prompt_data = prompt_data[:max_prompts]
+
     total_steps = len(prompt_data) * len(target_engines)
 
     if progress_store is not None:
@@ -136,6 +141,11 @@ async def run_capture_for_brand(
                 # Phase 3: Save with a fresh short-lived session
                 async with async_session() as db:
                     db.add(ai_response)
+                    # Backfill intent on the TrackedPrompt from the first response
+                    if ai_response.extra_metadata and ai_response.extra_metadata.get("intent"):
+                        prompt_row = await db.get(TrackedPrompt, prompt_id)
+                        if prompt_row and not prompt_row.intent:
+                            prompt_row.intent = ai_response.extra_metadata["intent"]
                     await db.commit()
 
                 stats["responses_captured"] += 1

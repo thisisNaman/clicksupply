@@ -1,27 +1,213 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap");
+
 @import "tailwindcss";
 
 :root {
   --background: #09090b;
   --foreground: #fafafa;
-  --card: #18181b;
+  --card: #111113;
+  --card-hover: #19191d;
   --card-foreground: #fafafa;
-  --primary: #6366f1;
+  --primary: #818cf8;
+  --primary-dark: #6366f1;
   --primary-foreground: #fafafa;
-  --secondary: #27272a;
-  --muted: #27272a;
-  --muted-foreground: #a1a1aa;
-  --accent: #6366f1;
-  --border: #27272a;
-  --success: #22c55e;
-  --warning: #eab308;
-  --danger: #ef4444;
+  --secondary: #1e1e24;
+  --muted: #1e1e24;
+  --muted-foreground: #71717a;
+  --accent: #818cf8;
+  --border: #23232a;
+  --border-light: #2e2e38;
+  --success: #34d399;
+  --success-muted: rgba(52, 211, 153, 0.12);
+  --warning: #fbbf24;
+  --warning-muted: rgba(251, 191, 36, 0.12);
+  --danger: #f87171;
+  --danger-muted: rgba(248, 113, 113, 0.12);
+  --primary-muted: rgba(129, 140, 248, 0.12);
+  --gradient-primary: linear-gradient(135deg, #818cf8, #6366f1);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
+  --radius: 12px;
+  --radius-sm: 8px;
+  --radius-xs: 6px;
+  --tooltip-bg: #1e1e24;
+  --tooltip-border: #2e2e38;
+}
+
+* {
+  box-sizing: border-box;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
   font-family:
+    "Inter",
     system-ui,
     -apple-system,
     sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-light);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--muted-foreground);
+}
+
+/* Table row hover */
+table tbody tr {
+  transition: background 0.15s ease;
+}
+table tbody tr:hover {
+  background: var(--secondary) !important;
+}
+
+/* Selection */
+::selection {
+  background: var(--primary-muted);
+  color: var(--foreground);
+}
+
+/* Focus ring */
+:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+/* Recharts tooltip fix — visible on dark bg */
+.recharts-tooltip-wrapper .recharts-default-tooltip {
+  background: var(--tooltip-bg) !important;
+  border: 1px solid var(--tooltip-border) !important;
+  border-radius: var(--radius-sm) !important;
+  box-shadow: var(--shadow-md) !important;
+}
+.recharts-tooltip-wrapper .recharts-default-tooltip .recharts-tooltip-label {
+  color: var(--foreground) !important;
+  font-weight: 600 !important;
+}
+.recharts-tooltip-wrapper .recharts-default-tooltip .recharts-tooltip-item {
+  color: var(--foreground) !important;
+}
+
+/* Kill Recharts grey hover cursor rectangle */
+.recharts-tooltip-cursor {
+  fill: transparent !important;
+  stroke: var(--border-light) !important;
+  stroke-width: 1 !important;
+  stroke-dasharray: 4 4 !important;
+}
+
+/* Micro animations */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes fadeInScale {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@keyframes slideInLeft {
+  from {
+    opacity: 0;
+    transform: translateX(-12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+@keyframes pulse-glow {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(129, 140, 248, 0);
+  }
+  50% {
+    box-shadow: 0 0 12px 2px rgba(129, 140, 248, 0.15);
+  }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.35s ease-out both;
+}
+.animate-fade-in-scale {
+  animation: fadeInScale 0.3s ease-out both;
+}
+.animate-slide-in-left {
+  animation: slideInLeft 0.3s ease-out both;
+}
+.animate-pulse-glow {
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
+/* Staggered children — apply to parent */
+.stagger-children > * {
+  animation: fadeIn 0.35s ease-out both;
+}
+.stagger-children > *:nth-child(1) {
+  animation-delay: 0ms;
+}
+.stagger-children > *:nth-child(2) {
+  animation-delay: 60ms;
+}
+.stagger-children > *:nth-child(3) {
+  animation-delay: 120ms;
+}
+.stagger-children > *:nth-child(4) {
+  animation-delay: 180ms;
+}
+.stagger-children > *:nth-child(5) {
+  animation-delay: 240ms;
+}
+.stagger-children > *:nth-child(6) {
+  animation-delay: 300ms;
+}
+
+/* Card hover lift */
+.card-hover {
+  transition:
+    transform 0.2s ease,
+    border-color 0.2s ease,
+    box-shadow 0.2s ease;
+}
+.card-hover:hover {
+  transform: translateY(-2px);
+  border-color: var(--border-light);
+  box-shadow: var(--shadow-md);
+}
+
+/* Smooth transitions */
+a,
+button,
+select,
+input {
+  transition: all 0.15s ease;
+}
+select:hover,
+input:hover {
+  border-color: var(--border-light) !important;
 }

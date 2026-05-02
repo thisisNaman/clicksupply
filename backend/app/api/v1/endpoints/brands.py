@@ -24,6 +24,7 @@ from app.schemas.schemas import (
     CompetitorOut,
     PromptCreate,
     PromptOut,
+    PromptUpdate,
 )
 from app.services.prompt_generator import generate_prompts_for_brand
 
@@ -207,6 +208,56 @@ async def list_prompts(
         )
     )
     return result.scalars().all()
+
+
+@router.put("/{brand_id}/prompts/{prompt_id}", response_model=PromptOut)
+async def update_prompt(
+    brand_id: uuid.UUID,
+    prompt_id: uuid.UUID,
+    req: PromptUpdate,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await _get_brand_or_404(brand_id, user.organization_id, db)
+    result = await db.execute(
+        select(TrackedPrompt).where(
+            TrackedPrompt.id == prompt_id, TrackedPrompt.brand_id == brand_id
+        )
+    )
+    prompt = result.scalar_one_or_none()
+    if not prompt:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Prompt not found")
+    if req.text is not None:
+        prompt.text = req.text
+    if req.language is not None:
+        prompt.language = req.language
+    if req.region is not None:
+        prompt.region = req.region
+    if req.is_active is not None:
+        prompt.is_active = req.is_active
+    await db.flush()
+    return prompt
+
+
+@router.delete("/{brand_id}/prompts/{prompt_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_prompt(
+    brand_id: uuid.UUID,
+    prompt_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Soft-delete a prompt by setting is_active=False (preserves response history)."""
+    await _get_brand_or_404(brand_id, user.organization_id, db)
+    result = await db.execute(
+        select(TrackedPrompt).where(
+            TrackedPrompt.id == prompt_id, TrackedPrompt.brand_id == brand_id
+        )
+    )
+    prompt = result.scalar_one_or_none()
+    if not prompt:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Prompt not found")
+    prompt.is_active = False
+    await db.flush()
 
 
 async def _get_brand_or_404(

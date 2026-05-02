@@ -9,6 +9,7 @@ Implements the rules from research/03_AEO_Recommendation_Engine.md:
 - E-E-A-T and third-party validation scoring
 """
 
+import asyncio
 import json
 import re
 from urllib.parse import urlparse
@@ -22,6 +23,30 @@ from app.services.llm.gateway import ModelTier, llm_gateway
 
 logger = structlog.get_logger()
 
+# ── Playwright singleton for fallback page fetching ──
+_pw_browser = None
+_pw_instance = None
+_pw_lock = asyncio.Lock()
+
+
+async def _get_browser():
+    """Lazy-init a headless Chromium instance (reused across all audits)."""
+    global _pw_browser, _pw_instance
+    if _pw_browser is not None:
+        return _pw_browser
+    async with _pw_lock:
+        if _pw_browser is not None:
+            return _pw_browser
+        try:
+            from playwright.async_api import async_playwright
+            _pw_instance = await async_playwright().__aenter__()
+            _pw_browser = await _pw_instance.chromium.launch(headless=True)
+            logger.info("aeo_playwright_browser_launched")
+        except Exception as e:
+            logger.warning("playwright_unavailable", error=str(e))
+            return None
+    return _pw_browser
+
 
 class AEORecommendationEngine:
     """Audits pages for AEO readiness and generates actionable recommendations."""
@@ -34,11 +59,23 @@ class AEORecommendationEngine:
                 url=url, score=0, recommendations=[
                     AEORecommendation(
                         category="technical", severity="critical",
-                        title="Page unreachable",
-                        description="Could not fetch the page",
-                        action="Ensure the URL is accessible",
-                    )
-                ], schema_suggestions=None, llms_txt_content=None,
+                        title="Site protected by CDN/WAF — blocked automated access",
+                        description=f"Could not fetch {url}. The site uses a CDN (e.g. Akamai, Cloudflare) that blocks automated requests with 403 or timeouts. This likely affects AI crawlers too.",
+                        action="1. Check robots.txt — explicitly allow GPTBot, ClaudeBot, Googlebot, Bingbot, PerplexityBot. "
+                               "2. Review WAF/CDN bot rules — whitelist known AI crawler IPs. "
+                               "3. Create an llms.txt file at /llms.txt with your brand summary. "
+                               "4. Add structured data (JSON-LD) so AI engines can extract info from search indexes even if they can't crawl directly.",
+                    ),
+                    AEORecommendation(
+                        category="schema_markup", severity="warning",
+                        title="Add JSON-LD structured data as a fallback",
+                        description="When AI crawlers can't access your site directly, they rely on search engine indexes. Rich structured data (Organization, Product, FAQ) increases the chance of being cited.",
+                        action="Add JSON-LD blocks for Organization, Product/Service, and FAQPage schemas to your key landing pages.",
+                    ),
+                ], schema_suggestions={
+                    "Organization": "Add your brand details (name, url, logo, description)",
+                    "FAQPage": "Add common questions about your services",
+                }, llms_txt_content=None,
             )
 
         soup = BeautifulSoup(html, "html.parser")
@@ -295,13 +332,68 @@ class AEORecommendationEngine:
 """
 
     async def _fetch_page(self, url: str) -> str | None:
+        """Fetch page HTML: try httpx first (fast), fall back to Playwright (bypasses CDN/WAF)."""
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        # Fast path: try httpx with short timeout
+        urls_to_try = [url]
+        if "://www." not in url:
+            urls_to_try.append(url.replace("://", "://www.", 1))
+
+        for attempt_url in urls_to_try:
+            try:
+                async with httpx.AsyncClient(
+                    timeout=httpx.Timeout(10.0, connect=5.0),
+                    follow_redirects=True,
+                    verify=False,
+                ) as client:
+                    resp = await client.get(attempt_url, headers=headers)
+                    if resp.status_code == 403:
+                        logger.info("page_fetch_blocked_httpx", url=attempt_url)
+                        continue
+                    resp.raise_for_status()
+                    return resp.text
+            except httpx.TimeoutException:
+                logger.info("page_fetch_timeout_httpx", url=attempt_url)
+                continue
+            except Exception:
+                continue
+
+        # Slow path: Playwright headless browser (bypasses Akamai, Cloudflare, etc.)
+        # Try all URL variants with the browser too
+        for attempt_url in urls_to_try:
+            logger.info("page_fetch_trying_playwright", url=attempt_url)
+            result = await self._fetch_page_browser(attempt_url)
+            if result:
+                return result
+        return None
+
+    async def _fetch_page_browser(self, url: str) -> str | None:
+        """Fetch page HTML using a real headless browser."""
+        browser = await _get_browser()
+        if browser is None:
+            return None
         try:
-            async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
-                resp = await client.get(url, headers={"User-Agent": "ClickSupply-AEO-Auditor/1.0"})
-                resp.raise_for_status()
-                return resp.text
+            page = await browser.new_page()
+            try:
+                # Use 'commit' event — fires as soon as the server responds,
+                # much faster than 'domcontentloaded' for heavy JS sites
+                await page.goto(url, wait_until="commit", timeout=45000)
+                # Wait a bit for initial HTML to arrive
+                await page.wait_for_timeout(3000)
+                html = await page.content()
+                if len(html) > 500:
+                    logger.info("page_fetch_playwright_ok", url=url, length=len(html))
+                    return html
+                logger.warning("page_fetch_playwright_empty", url=url, length=len(html))
+                return None
+            finally:
+                await page.close()
         except Exception as e:
-            logger.error("page_fetch_failed", url=url, error=str(e))
+            logger.warning("page_fetch_playwright_failed", url=url, error=f"{type(e).__name__}: {e}")
             return None
 
 

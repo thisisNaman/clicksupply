@@ -16,7 +16,7 @@ from app.models.models import (
     User,
     VisibilityScore,
 )
-from app.schemas.schemas import AIResponseOut, CrawlerStats, VisibilityScoreOut
+from app.schemas.schemas import AIResponseOut, AIResponseDetail, CrawlerStats, VisibilityScoreOut
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 
@@ -67,6 +67,58 @@ async def get_responses(
 
     result = await db.execute(query)
     return result.scalars().all()
+
+
+@router.get("/responses-detail/{brand_id}")
+async def get_responses_detail(
+    brand_id: uuid.UUID,
+    prompt_id: uuid.UUID | None = None,
+    engine: str | None = None,
+    language: str | None = None,
+    region: str | None = None,
+    limit: int = Query(default=50, ge=1, le=200),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Response viewer with full raw_response, extra_metadata, and language/region filtering."""
+    await _verify_brand_access(brand_id, user.organization_id, db)
+
+    query = (
+        select(AIResponse, TrackedPrompt)
+        .join(TrackedPrompt)
+        .where(TrackedPrompt.brand_id == brand_id)
+    )
+    if prompt_id:
+        query = query.where(AIResponse.prompt_id == prompt_id)
+    if engine:
+        query = query.where(AIResponse.engine == engine)
+    if language:
+        query = query.where(TrackedPrompt.language == language)
+    if region:
+        query = query.where(TrackedPrompt.region == region)
+    query = query.order_by(AIResponse.captured_at.desc()).limit(limit)
+
+    result = await db.execute(query)
+    rows = result.all()
+
+    return [
+        AIResponseDetail(
+            id=resp.id,
+            engine=resp.engine.value if hasattr(resp.engine, "value") else str(resp.engine),
+            raw_response=resp.raw_response or "",
+            brand_mentioned=resp.brand_mentioned,
+            generative_position=resp.generative_position,
+            sentiment=resp.sentiment.value if hasattr(resp.sentiment, "value") and resp.sentiment else None,
+            citations=resp.citations,
+            extra_metadata=resp.extra_metadata,
+            captured_at=resp.captured_at,
+            cost_usd=float(resp.cost_usd or 0),
+            prompt_text=prompt.text,
+            prompt_language=prompt.language,
+            prompt_region=prompt.region,
+        )
+        for resp, prompt in rows
+    ]
 
 
 @router.get("/crawlers/{brand_id}", response_model=list[CrawlerStats])

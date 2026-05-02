@@ -12,8 +12,10 @@ import structlog
 from copilot import (
     CopilotClient,
     CopilotSession,
-    PermissionHandler,
     SubprocessConfig,
+)
+from copilot.session import (
+    PermissionHandler,
     SystemMessageReplaceConfig,
 )
 from copilot.generated.session_events import SessionEventType
